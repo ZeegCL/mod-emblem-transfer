@@ -159,9 +159,9 @@ public:
             return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
         }
 
-        int amount;
+        uint32 transferAmount;
         std::stringstream ss(code);
-        ss >> amount;
+        ss >> transferAmount;
 
         uint32 emblemsCount = 0;
         uint32 emblemId = 0;
@@ -182,18 +182,20 @@ public:
         }
         emblemsCount = player->GetItemCount(emblemId);
 
-        if (emblemsCount < amount)
+        if (emblemsCount < transferAmount)
         {
             player->GetSession()->SendNotification("You don't have enough emblems!");
             return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
         }
 
         uint64 targetGuid = MAKE_NEW_GUID(action, 0, HIGHGUID_PLAYER);
-        uint32 receivedAmount = amount * (1.0f - penalty);
+        uint32 receivedAmount = transferAmount * (1.0f - penalty);
         CharacterDatabase.PExecute("INSERT INTO emblem_transferences(sender_guid, receiver_guid, emblem_entry, amount) VALUES (%u, %u, %u, %u)", player->GetSession()->GetGuidLow(), targetGuid, emblemId, receivedAmount);
-        player->DestroyItemCount(emblemId, -amount, true, false);
-        player->GetSession()->SendNotification("Transfer completed! Log in with your other character to retrieve the emblems");
-        return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
+        player->DestroyItemCount(emblemId, -transferAmount, true, false);
+        
+        player->ADD_GOSSIP_ITEM(GOSSIP_ICON_TAXI, "Transfer completed! Log in with your other character to retrieve the emblems", GOSSIP_SENDER_MAIN, ACTION_CLOSE);
+        player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+        return true;
     }
 
     void SendCharactersList(Player* player, Creature* creature, uint32 sender, uint32 action)
