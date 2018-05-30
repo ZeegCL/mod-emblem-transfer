@@ -4,13 +4,15 @@
 #include "GossipDef.h"
 #include "Player.h"
 #include "ScriptedGossip.h"
+#include "Language.h"
 
 enum Actions
 {
-    ACTION_CLOSE                 = 0,
-    ACTION_TRANSFER_FROST       = 1001,
-    ACTION_TRANSFER_TRIUMPH     = 1002,
-    ACTION_TRANSFER_CONQUEST    = 1003
+    ACTION_CLOSE                = 0,
+    ACTION_RETRIEVE_EMBLEMS     = 1001,
+    ACTION_TRANSFER_FROST       = 1002,
+    ACTION_TRANSFER_TRIUMPH     = 1003,
+    ACTION_TRANSFER_CONQUEST    = 1004
 };
 
 enum Items
@@ -50,58 +52,102 @@ public:
         if (sConfigMgr->GetBoolDefault("EmblemTransfer.allowEmblemsConquest", false))
             player->ADD_GOSSIP_ITEM(GOSSIP_ICON_MONEY_BAG, "Transfer my Emblems of Conquest", GOSSIP_SENDER_MAIN, ACTION_TRANSFER_CONQUEST);
 
+        QueryResult result = CharacterDatabase.PQuery("SELECT 1 FROM emblem_transferences WHERE receiver_guid = %u AND active = 1 LIMIT 1", player->GetSession()->GetGuidLow());
+        if (result)
+            player->ADD_GOSSIP_ITEM(GOSSIP_ICON_TALK, "Get my transfered emblems", GOSSIP_SENDER_MAIN, ACTION_RETRIEVE_EMBLEMS);
+
         player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
 
         return true;
     }
 
-    // Step 2
-    void SendCharactersList(Player* player, Creature* creature, uint32 sender, uint32 action)
+    bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action)
     {
-        uint32 minAmount = sConfigMgr->GetIntDefault("EmblemTransfer.minAmount", 10);
+        player->PlayerTalkClass->ClearMenus();
 
-        // Get the character's emblems of the selected type
-        uint32 emblems = 0;
-        uint32 newSender = sender;
-        switch (action)
+        if (action == ACTION_CLOSE)
         {
-            case ACTION_TRANSFER_FROST:
-                newSender = GOSSIP_SENDER_TRANSFER_FROST;
-                emblems = player->GetItemCount(ITEM_EMBLEM_OF_FROST);
-                break;
-            case ACTION_TRANSFER_TRIUMPH:
-                newSender = GOSSIP_SENDER_TRANSFER_TRIUMPH;
-                emblems = player->GetItemCount(ITEM_EMBLEM_OF_TRIUMPH);
-                break;
-            case ACTION_TRANSFER_CONQUEST:
-                newSender = GOSSIP_SENDER_TRANSFER_CONQUEST;
-                emblems = player->GetItemCount(ITEM_EMBLEM_OF_CONQUEST);
-                break;
-        }
-
-        if (emblems < minAmount)
-        {
-            player->GetSession()->SendNotification("You don't have enough emblems! The minimum amount is %d", minAmount);
             player->CLOSE_GOSSIP_MENU();
-            return;
+            return true;
         }
 
-        // Send characters list
-        PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHAR_GUID_NAME_BY_ACC);
-        stmt->setUInt32(0, player->GetSession()->GetAccountId());
-        PreparedQueryResult result = CharacterDatabase.Query(stmt);
-
-        if (result) {
-            do
+        // Player wants to get its emblems
+        if (action == ACTION_RETRIEVE_EMBLEMS)
+        {
+            QueryResult result = CharacterDatabase.PQuery("SELECT emblem_entry, amount FROM emblem_transferences WHERE receiver_guid = %u AND active = 1", player->GetSession()->GetGuidLow());
+            if (result)
             {
-                Field* characterFields  = result->Fetch();
-                uint32 guid             = characterFields[0].GetUInt32();
-                std::string name        = characterFields[1].GetString();
+                do
+                {
+                    Field* fields = result->Fetch();
+                    uint32 emblemId = fields[0].GetUInt32();
+                    uint32 amount = fields[1].GetUInt32();
 
-                if (!(guid == player->GetSession()->GetGuidLow()))
-                    player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, name, newSender, guid);
-            } while (result->NextRow());
+                    // Adding items
+                    uint32 noSpaceForCount = 0;
+
+                    // check space and find places
+                    ItemPosCountVec dest;
+                    InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, emblemId, amount, &noSpaceForCount);
+                    if (msg != EQUIP_ERR_OK)
+                        amount -= noSpaceForCount;
+
+                    if (amount == 0 || dest.empty())
+                    {
+                        player->GetSession()->SendNotification(LANG_ITEM_CANNOT_CREATE, emblemId, noSpaceForCount);
+                        continue;
+                    }
+
+                    Item* item = player->StoreNewItem(dest, emblemId, true, Item::GenerateItemRandomPropertyId(emblemId));
+                    if (amount > 0 && item)
+                        player->SendNewItem(item, amount, true, false);
+                } while (result->NextRow());
+
+                CharacterDatabase.PExecute("UPDATE emblem_transferences SET active = 0, received_timestamp = CURRENT_TIMESTAMP WHERE receiver_guid = %u AND active = 1", player->GetSession()->GetGuidLow());
+                player->GetSession()->SendNotification("Thank you for using the emblem transfer service!");
+                return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
+            }
         }
+        
+        // Player selected one of the emblem transfer options
+        if (sender == GOSSIP_SENDER_MAIN)
+        {
+            uint32 minAmount = sConfigMgr->GetIntDefault("EmblemTransfer.minAmount", 10);
+
+            // Get the character's emblems of the selected type
+            uint32 emblems = 0;
+            uint32 newSender = sender;
+            switch (action)
+            {
+                case ACTION_TRANSFER_FROST:
+                    newSender = GOSSIP_SENDER_TRANSFER_FROST;
+                    emblems = player->GetItemCount(ITEM_EMBLEM_OF_FROST);
+                    break;
+                case ACTION_TRANSFER_TRIUMPH:
+                    newSender = GOSSIP_SENDER_TRANSFER_TRIUMPH;
+                    emblems = player->GetItemCount(ITEM_EMBLEM_OF_TRIUMPH);
+                    break;
+                case ACTION_TRANSFER_CONQUEST:
+                    newSender = GOSSIP_SENDER_TRANSFER_CONQUEST;
+                    emblems = player->GetItemCount(ITEM_EMBLEM_OF_CONQUEST);
+                    break;
+            }
+
+            if (emblems < minAmount)
+            {
+                player->GetSession()->SendNotification("You don't have enough emblems! The minimum amount is %d", minAmount);
+                return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
+            }
+
+            SendCharactersList(player, creature, newSender, action);
+        }
+        // Player selected a character to transfer
+        else {
+            player->ADD_GOSSIP_ITEM_EXTENDED(GOSSIP_ICON_MONEY_BAG, "Last step: Amount of emblems", sender, action, "Enter the amount of emblems to transfer:", 0, true);
+        }
+
+        player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+        return true;
     }
 
     // Step 3
@@ -122,7 +168,7 @@ public:
         uint32 newSender = sender;
         float penalty = sConfigMgr->GetFloatDefault("EmblemTransfer.penalty", 0.1f);
 
-        switch (action)
+        switch (sender)
         {
             case GOSSIP_SENDER_TRANSFER_FROST:
                 emblemId = ITEM_EMBLEM_OF_FROST;
@@ -142,42 +188,32 @@ public:
             return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
         }
 
-        Player* target = ObjectAccessor::FindPlayerInOrOutOfWorld(MAKE_NEW_GUID(action, 0, HIGHGUID_PLAYER));
-
-        if (!target)
-        {
-            player->GetSession()->SendNotification("Character not found!");
-            return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
-        }
-
-        if (target->AddItem(emblemId, amount * (1.0f - penalty)))
-        {
-            player->DestroyItemCount(emblemId, -amount, true, false);
-        }
-
-        player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
-        return true;
+        uint64 targetGuid = MAKE_NEW_GUID(action, 0, HIGHGUID_PLAYER);
+        uint32 receivedAmount = amount * (1.0f - penalty);
+        CharacterDatabase.PExecute("INSERT INTO emblem_transferences(sender_guid, receiver_guid, emblem_entry, amount) VALUES (%u, %u, %u, %u)", player->GetSession()->GetGuidLow(), targetGuid, emblemId, receivedAmount);
+        player->DestroyItemCount(emblemId, -amount, true, false);
+        player->GetSession()->SendNotification("Transfer completed! Log in with your other character to retrieve the emblems");
+        return OnGossipSelect(player, creature, sender, ACTION_CLOSE);
     }
 
-    bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action)
+    void SendCharactersList(Player* player, Creature* creature, uint32 sender, uint32 action)
     {
-        if (action == ACTION_CLOSE)
-        {
-            player->CLOSE_GOSSIP_MENU();
-            return true;
-        }
+        // Send characters list
+        PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHAR_GUID_NAME_BY_ACC);
+        stmt->setUInt32(0, player->GetSession()->GetAccountId());
+        PreparedQueryResult result = CharacterDatabase.Query(stmt);
 
-        player->PlayerTalkClass->ClearMenus();
-        
-        if (sender == GOSSIP_SENDER_MAIN)
-        {
-            SendCharactersList(player, creature, sender, action);
-        } else {
-            player->ADD_GOSSIP_ITEM_EXTENDED(GOSSIP_ICON_MONEY_BAG, "Last step!", sender, action, "Enter the amount of emblems to transfer:", 0, true);
-        }
+        if (result) {
+            do
+            {
+                Field* characterFields  = result->Fetch();
+                uint32 guid             = characterFields[0].GetUInt32();
+                std::string name        = characterFields[1].GetString();
 
-        player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
-        return true;
+                if (!(guid == player->GetSession()->GetGuidLow()))
+                    player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, name, sender, guid);
+            } while (result->NextRow());
+        }
     }
 
     bool isNumber(const char* c)
