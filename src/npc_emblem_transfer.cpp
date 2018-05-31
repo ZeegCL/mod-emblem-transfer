@@ -191,8 +191,9 @@ public:
         uint64 targetGuid = MAKE_NEW_GUID(action, 0, HIGHGUID_PLAYER);
         uint32 receivedAmount = transferAmount * (1.0f - penalty);
         CharacterDatabase.PExecute("INSERT INTO emblem_transferences(sender_guid, receiver_guid, emblem_entry, amount) VALUES (%u, %u, %u, %u)", player->GetSession()->GetGuidLow(), targetGuid, emblemId, receivedAmount);
-        player->DestroyItemCount(emblemId, -transferAmount, true, false);
+        player->DestroyItemCount(emblemId, (int)-transferAmount, true, false);
         
+        player->PlayerTalkClass->ClearMenus(); // Clear window before farewell
         player->ADD_GOSSIP_ITEM(GOSSIP_ICON_TAXI, "Transfer completed! Log in with your other character to retrieve the emblems", GOSSIP_SENDER_MAIN, ACTION_CLOSE);
         player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
         return true;
