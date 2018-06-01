@@ -8,11 +8,12 @@
 
 enum Actions
 {
-    ACTION_CLOSE                = 0,
+    ACTION_NONE                 = 0,
     ACTION_RETRIEVE_EMBLEMS     = 1001,
     ACTION_TRANSFER_FROST       = 1002,
     ACTION_TRANSFER_TRIUMPH     = 1003,
-    ACTION_TRANSFER_CONQUEST    = 1004
+    ACTION_TRANSFER_CONQUEST    = 1004,
+    ACTION_CLOSE                = 1005
 };
 
 enum Items
@@ -43,6 +44,14 @@ public:
     // Step 1
     bool OnGossipHello(Player* player, Creature* creature) 
     {
+        float penalty = sConfigMgr->GetFloatDefault("EmblemTransfer.penalty", 0.0f);
+        if (penalty > 0.0f)
+        {
+            std::stringstream ss;
+            ss << "Transferences will be applied a " << (penalty * 100.0f) << "% penalty. For every 10, you will receive " << (10 * (1.0f - penalty)) << ".";
+            player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, ss.str().c_str(), GOSSIP_SENDER_MAIN, ACTION_NONE);
+        }
+
         if (sConfigMgr->GetBoolDefault("EmblemTransfer.allowEmblemsFrost", true))
             player->ADD_GOSSIP_ITEM(GOSSIP_ICON_MONEY_BAG, "Transfer my Emblems of Frost", GOSSIP_SENDER_MAIN, ACTION_TRANSFER_FROST);
 
@@ -71,6 +80,11 @@ public:
             return true;
         }
 
+        if (action == ACTION_NONE)
+        {
+            return OnGossipHello(player, creature);
+        }
+
         // Player wants to get its emblems
         if (action == ACTION_RETRIEVE_EMBLEMS)
         {
@@ -83,10 +97,11 @@ public:
                     uint32 emblemId = fields[0].GetUInt32();
                     uint32 amount = fields[1].GetUInt32();
 
-                    // Adding items
-                    uint32 noSpaceForCount = 0;
+                    // The next block of code was copied from .additem command
+                    // <START>
 
                     // check space and find places
+                    uint32 noSpaceForCount = 0;
                     ItemPosCountVec dest;
                     InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, emblemId, amount, &noSpaceForCount);
                     if (msg != EQUIP_ERR_OK)
@@ -101,6 +116,7 @@ public:
                     Item* item = player->StoreNewItem(dest, emblemId, true, Item::GenerateItemRandomPropertyId(emblemId));
                     if (amount > 0 && item)
                         player->SendNewItem(item, amount, true, false);
+                    // <END>
                 } while (result->NextRow());
 
                 CharacterDatabase.PExecute("UPDATE emblem_transferences SET active = 0, received_timestamp = CURRENT_TIMESTAMP WHERE receiver_guid = %u AND active = 1", player->GetSession()->GetGuidLow());
